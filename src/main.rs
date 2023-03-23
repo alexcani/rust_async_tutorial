@@ -5,6 +5,7 @@ use async_std::task;
 use futures::StreamExt;
 use std::fs;
 use std::time::Duration;
+use async_std::task::spawn;
 
 #[async_std::main]
 async fn main() {
@@ -16,7 +17,7 @@ async fn main() {
         .incoming()
         .for_each_concurrent(None, |stream| async move {
             let stream = stream.unwrap();
-            handle_connection(stream).await;
+            spawn(handle_connection(stream));
         })
         .await;
 }
