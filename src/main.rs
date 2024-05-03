@@ -3,26 +3,49 @@ use async_std::net::TcpListener;
 use async_std::prelude::*;
 use async_std::task;
 use async_std::task::spawn;
+use futures::future;
 use futures::StreamExt;
 use std::fs;
 use std::time::Duration;
 
 #[async_std::main]
 async fn main() {
-    // Listen for incoming TCP connections on localhost port 7878
-    let listener = TcpListener::bind("127.0.0.1:7878").await.unwrap();
+    let handlers = vec![
+        listen_on("192.168.100.1:1234", false).await,
+        listen_on("192.168.25.1:1234", false).await,
+        listen_on("192.168.75.1:1234", false).await,
+        listen_on("[fc00::1]:1234", true).await,
+        listen_on("[fd00::1]:1234", true).await,
+        listen_on("[2001:db8::c633:6401]:1234", true).await,
+    ];
 
-    // Block forever, handling each request that arrives at this IP address
-    listener
-        .incoming()
-        .for_each_concurrent(None, |stream| async move {
-            let stream = stream.unwrap();
-            spawn(handle_connection(stream));
-        })
-        .await;
+    let _ = future::join_all(handlers).await;
 }
 
-async fn handle_connection(mut stream: impl Read + Write + Unpin) {
+async fn listen_on(ip: &str, ipv6: bool) -> future::BoxFuture<()> {
+    let listener = TcpListener::bind(ip).await;
+    let listener = match listener {
+        Ok(l) => l,
+        Err(e) => {
+            println!("Error binding IP {ip}: {}", e);
+            return Box::pin(future::ready(()));
+        }
+    };
+
+    let connections = async move {
+        let mut l = listener.incoming();
+        while let Some(stream) = l.next().await {
+            let stream = stream.unwrap();
+            println!("Got connection from {}", stream.peer_addr().unwrap());
+            spawn(handle_connection(stream, ipv6));
+        }
+        println!("Done with");
+    };
+
+    Box::pin(connections)
+}
+
+async fn handle_connection(mut stream: impl Read + Write + Unpin, is_ipv6: bool) {
     // Read the first 1024 bytes of data from the stream
     let mut buffer = [0; 1024];
     let _n = stream.read(&mut buffer).await.unwrap();
@@ -33,7 +56,10 @@ async fn handle_connection(mut stream: impl Read + Write + Unpin) {
     // Respond with greetings or a 404,
     // depending on the data in the request
     let (status_line, filename) = if buffer.starts_with(get) {
-        ("HTTP/1.1 200 OK\r\n\r\n", "hello.html")
+        match is_ipv6 {
+            true => ("HTTP/1.1 200 OK\r\n\r\n", "hello_6.html"),
+            false => ("HTTP/1.1 200 OK\r\n\r\n", "hello.html"),
+        }
     } else if buffer.starts_with(sleep) {
         task::sleep(Duration::from_secs(5)).await;
         ("HTTP/1.1 200 OK\r\n\r\n", "hello.html")
@@ -100,7 +126,7 @@ mod tests {
         contents[..input_bytes.len()].copy_from_slice(input_bytes);
         let mut stream = MockTcpStream {
             read_data: contents,
-            write_data: Vec::new()
+            write_data: Vec::new(),
         };
 
         handle_connection(&mut stream).await;
@@ -109,5 +135,4 @@ mod tests {
         let expected_response = format!("HTTP/1.1 200 OK\r\n\r\n{}", expected_contents);
         assert_eq!(stream.write_data, expected_response.as_bytes());
     }
-
 }
